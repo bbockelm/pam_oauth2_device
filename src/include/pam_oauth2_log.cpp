@@ -5,6 +5,7 @@
 #include "pam_oauth2_log.hpp"
 #include "pam_oauth2_excpt.hpp"
 #include <syslog.h>
+#include <cstring>
 #include <security/pam_ext.h>
 
 
@@ -19,10 +20,11 @@ pam_oauth2_log::pam_oauth2_log(pam_handle *ph, log_level_t lev) noexcept : ph_(p
 
 pam_oauth2_log::~pam_oauth2_log()
 {
-    if(log_) {
+    // log_ is stderr rather than a stream this class opened: closing it would
+    // take fd 2 away from the whole process.
+    if(log_ && log_ != stderr && log_ != stdout)
         fclose(log_);
-        log_ = nullptr;
-    }
+    log_ = nullptr;
 }
 
 
@@ -108,15 +110,22 @@ pam_oauth2_log::log(BaseError const &e) noexcept
 void
 pam_oauth2_log::log(log_level_t level, const char *fmt, ...) noexcept
 {
-    if(lev_ == log_level_t::OFF)
+    // Exceptions are still logged unconditionally, as the header says.
+    if(!log_this(level))
         return;
     va_list ap1, ap2;
     va_start(ap1, fmt);
     va_copy(ap2, ap1);		// dest, src
     if(ph_)
         pam_vsyslog(ph_, syslog_pri(level), fmt, ap1);
-    if(log_)
+    if(log_) {
         vfprintf(log_, fmt, ap2);
+        // syslog does not need a terminator and most callers do not supply
+        // one, which runs consecutive messages together on stderr.
+        size_t const len = fmt ? strlen(fmt) : 0;
+        if(len == 0 || fmt[len - 1] != '\n')
+            fputc('\n', log_);
+    }
     va_end(ap1);
     va_end(ap2);
 }
