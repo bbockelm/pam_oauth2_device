@@ -172,6 +172,56 @@ Config::load(const char *path)
     for( auto var : configdata )
 	var.set(config);
 
+    // The mfa section, hand-parsed because acr_values and amr_values are lists
+    // and the machinery above only carries strings, ints and bools.
+    if (config.find("mfa") != the_end) {
+	json const &j = config.at("mfa");
+	if(!j.is_object())
+	    throw std::runtime_error("Config: the \"mfa\" section must be an object");
+
+	auto read_values = [&j](char const *key, std::set<std::string> &target) {
+	    if(j.find(key) == j.end())
+		return;
+	    json const &values = j.at(key);
+	    if(values.is_string()) {
+		target.insert(values.get<std::string>());
+	    } else if(values.is_array()) {
+		for(auto const &v : values) {
+		    if(!v.is_string())
+			throw std::runtime_error("Config: mfa values must be strings");
+		    target.insert(v.get<std::string>());
+		}
+	    } else {
+		throw std::runtime_error("Config: mfa values must be a string or an array of strings");
+	    }
+	};
+	read_values("acr_values", mfa_acr_values);
+	read_values("amr_values", mfa_amr_values);
+
+	if(j.find("if_absent") != j.end()) {
+	    auto const &policy = j.at("if_absent");
+	    if(!policy.is_string())
+		throw std::runtime_error("Config: mfa.if_absent must be a string");
+	    auto const name = policy.get<std::string>();
+	    if(name == "ignore")
+		mfa_if_absent = mfa_policy_t::IGNORE;
+	    else if(name == "second_factor")
+		mfa_if_absent = mfa_policy_t::SECOND_FACTOR;
+	    else if(name == "deny")
+		mfa_if_absent = mfa_policy_t::DENY;
+	    else
+		throw std::runtime_error("Config: mfa.if_absent must be one of \"ignore\", \"second_factor\", \"deny\"");
+	}
+
+	// Asking for a policy without saying what counts as MFA would silently
+	// apply it to everyone; that is a configuration error, not a default.
+	if(mfa_if_absent != mfa_policy_t::IGNORE
+	   && mfa_acr_values.empty() && mfa_amr_values.empty())
+	    throw std::runtime_error("Config: mfa.if_absent is set but no acr_values or amr_values were given");
+    }
+    else if(debug)
+	std::cerr << "No mfa section found\n";
+
     // The users section is much like before but can be in a separate file, too
     if (config.find("users") != the_end) {
 	json j = config.at("users");

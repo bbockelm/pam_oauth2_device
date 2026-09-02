@@ -23,6 +23,11 @@
         "filter": "(&(objectClass=user)(fedid=%s))",
         "attr": "uid"
     },
+    "mfa": {
+	"acr_values": ["https://refeds.org/profile/mfa"],
+	"amr_values": [],
+	"if_absent": "ignore"
+    },
     "qr": {
         "error_correction_level": 0
     },

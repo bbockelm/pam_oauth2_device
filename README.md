@@ -223,6 +223,216 @@ section, the PAM module is bypassed.  See the HOWTO for further details.
 - The metadata file called `project_id` currently has a backwards compatible default of `/mnt/context/openstack/latest/meta_data.json`
 
 
+## Multi-factor authentication
+
+Some OpenID Connect providers record whether the user's identity provider
+performed MFA.  CILogon reports it as an [Authentication Context Class
+Reference](https://www.cilogon.org/oidc): an `acr` claim whose value is
+`https://refeds.org/profile/mfa`.  The **mfa** section lets you require a
+second factor from the PAM stack when that claim is absent.
+
+```json
+"mfa": {
+    "acr_values": ["https://refeds.org/profile/mfa"],
+    "amr_values": [],
+    "if_absent": "second_factor"
+}
+```
+
+**acr_values** - values of the userinfo `acr` claim that count as MFA having
+been performed.  **amr_values** - values of the `amr` claim that count, for
+providers that report the methods used rather than a context class.  Either
+list may be a single string instead of an array; a match in either satisfies
+the policy.
+
+**if_absent** - what to do when neither matched:
+
+  * `ignore` - do not look at the claims at all.  This is the default, so
+    existing configurations are unaffected.
+  * `second_factor` - authentication succeeded, but `pam_sm_authenticate`
+    returns `PAM_CRED_INSUFFICIENT` so the PAM stack can run a second factor.
+  * `deny` - refuse the login.
+
+Setting `if_absent` to anything but `ignore` without giving any `acr_values` or
+`amr_values` is a configuration error: the policy would otherwise apply to every
+login.  The MFA check runs *after* authorisation, so a user who would be refused
+anyway is told no rather than being sent round a second factor first.
+
+### A caveat: MFA now versus MFA at some point
+
+These claims describe the authentication that started the provider's SSO
+session, which is not necessarily this login, and the userinfo response carries
+no `auth_time` with which to tell the difference.
+
+An SSO session at the provider can outlive not just the login but a change in
+the user's MFA enrolment: enabling 2FA on an account and repeating the device
+flow can keep returning the pre-2FA answer until that session ends.  The session
+that goes stale is the OpenID Connect provider's, so logging out of the identity
+provider behind it does not necessarily clear it.
+
+So this feature answers "did this user do MFA at some point in their current
+provider session?", not "was this user challenged just now".  If you need the
+stronger property, this is not enough on its own, and the `auth_time` claim
+needed to bound it appears only in the ID token, which the module does not read.
+
+### Requiring TOTP from the PAM stack
+
+`second_factor` reports its result through the return code, so the PAM stack
+decides what the second factor actually is.  With
+[pam_oath](https://www.nongnu.org/oath-toolkit/pam_oath.html):
+
+```
+auth [success=done cred_insufficient=ignore ignore=ignore default=die] pam_oauth2_device.so /etc/pam_oauth2_device/config.json
+auth requisite  pam_oath.so usersfile=/etc/users.oath window=10 digits=6
+auth required   pam_permit.so
+```
+
+Read the first line as: if the provider recorded MFA, the stack is finished and
+succeeds; if it did not, contribute nothing and carry on to `pam_oath`; on
+anything else, fail immediately.  `pam_google_authenticator`, `pam_yubico` and
+the like drop into the same slot.
+
+Two of those control values are easy to get wrong, in ways that are not obvious
+from reading the stack:
+
+  * `cred_insufficient` must be **`ignore`**, not `ok`.  `ok` sets the stack's
+    status to `PAM_CRED_INSUFFICIENT`, and a later success cannot overwrite a
+    non-success status - so the second factor would pass and the login would
+    still be refused.
+  * `ignore` must be **`ignore`**, not a jump.  Accounts listed under
+    `*bypass*` make the module return `PAM_IGNORE`, and a jump would carry them
+    over the second factor and onto whatever follows it - with the stack above,
+    straight onto `pam_permit`, letting those accounts in with no credential at
+    all.
+
+With `ignore=ignore`, a `*bypass*` account falls through to the modules after
+this one and has to satisfy them, exactly as it would if this module were not
+in the stack.  In the stack above that means it must pass `pam_oath`.  If those
+accounts should authenticate some other way, route them before this module
+reaches them:
+
+```
+auth [success=done default=ignore] pam_succeed_if.so user in root:emergency quiet
+auth substack   password-auth
+auth [success=done cred_insufficient=ignore ignore=ignore default=die] pam_oauth2_device.so /etc/pam_oauth2_device/config.json
+auth requisite  pam_oath.so usersfile=/etc/users.oath window=10 digits=6
+auth required   pam_permit.so
+```
+
+Whatever you settle on, check it before putting it in front of sshd.  Both
+stacks above are exercised by `test/pam_stack_test.sh`, which drives them with
+`pamtester` and a stub module.
+
+### Checking what your provider actually sends
+
+Whether an `acr` claim appears at all depends on the identity provider the user
+picks, not just on CILogon, and CILogon does not advertise `acr_values_supported`
+in its discovery document - so you cannot ask for MFA, only observe whether it
+happened.  Before configuring a policy, run
+[`util/oidc-probe/oidc-probe.py`](util/oidc-probe/oidc-probe.py) against your
+client:
+
+```
+./util/oidc-probe/oidc-probe.py /etc/pam_oauth2_device/config.json
+```
+
+It runs one device flow and reports which of the four possible sources - the ID
+token, the access token, the userinfo endpoint and token introspection - carry
+`acr`, `amr` and `auth_time`.  Do it twice, once with an IdP that does MFA and
+once with one that does not, and check that the claim really does appear and
+disappear.  The script prints the claims of the ID token as well as the
+userinfo response, so treat its output as sensitive.
+
+Which source carries what (measured against CILogon, September 2026):
+
+| source | `acr` / `amr` | `auth_time` |
+| --- | --- | --- |
+| userinfo endpoint | when the IdP asserts one | no |
+| ID token | when the IdP asserts one | yes |
+| access token | opaque, not a JWT | - |
+| introspection endpoint | no | no |
+
+The module reads the **userinfo** response, which it already fetches to get the
+username and groups, so the MFA check costs no extra request.  Note that `acr`
+is an ID Token claim in OpenID Connect Core rather than a userinfo claim, so a
+provider that is strict about this may not return it from userinfo even though
+CILogon does; the probe described below will tell you.
+
+Identity providers differ over what they report, and the four measured behind a
+single CILogon client covered four distinct shapes:
+
+| what the provider reports | example |
+| --- | --- |
+| `acr` naming the REFEDS MFA profile | `https://refeds.org/profile/mfa` |
+| `acr` naming some other context, even though MFA was used | `urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport` |
+| no `acr`, but an `amr` listing the methods | `"pwd"`, becoming `"mfa"` once the account enabled 2FA |
+| neither claim | - |
+
+Three things follow, and they set the expectations you should have of this
+feature:
+
+  * A policy has to match `acr` and `amr` *values*, and cope with both being
+    missing.  Testing whether a claim exists would accept the second row, where
+    MFA was in use but not reported as such; reading one unconditionally would
+    break on the fourth.
+  * `acr` is not the only signal.  Some providers send only `amr`, which is why
+    `amr_values` exists.  Both claims are accepted as a string or as an array
+    of strings, because CILogon sends `amr` as a bare string even though OpenID
+    Connect Core specifies an array.
+  * An identity provider that performs MFA does not necessarily say so in
+    REFEDS terms, and CILogon does not advertise `acr_values_supported`, so the
+    context cannot be requested - only observed.  Expect users at such providers
+    to be sent to the second factor even though they have already used one, and
+    check your own user population with the probe before promising anyone a
+    smooth path.
+
+A configuration covering both of the providers that do report it:
+
+```json
+"mfa": {
+    "acr_values": ["https://refeds.org/profile/mfa"],
+    "amr_values": ["mfa", "otp"],
+    "if_absent": "second_factor"
+}
+```
+
+### Troubleshooting
+
+Everything below is logged to `authpriv`, so on EL it lands in
+`/var/log/secure`.  Each line is tagged with the PAM service and the process,
+so `grep sshd /var/log/secure` around the time of the login is the place to
+start.
+
+A login that was refused, or unexpectedly sent to a second factor, logs what
+the provider said *and* what was configured:
+
+```
+provider did not record MFA: acr <absent>, amr pwd; \
+    configured acr_values [https://refeds.org/profile/mfa], amr_values [mfa]
+requiring a second factor: returning PAM_CRED_INSUFFICIENT. ...
+```
+
+  * **`acr <absent>, amr <absent>`** - the identity provider reported nothing
+    about how the user authenticated.  Nothing to configure; those users always
+    get the second factor.  Google is like this.
+  * **A value you did not expect** - add it to `acr_values` or `amr_values` if
+    it does mean MFA.  Confirm with the probe first, on an account you know is
+    not using MFA, that the value actually changes.
+  * **`returning PAM_CRED_INSUFFICIENT` followed by a failed login and nothing
+    else** - the PAM stack is not handling `cred_insufficient`.  That is the
+    module asking for a second factor and the stack treating it as a refusal;
+    check the control flags against the stack above, and against
+    `test/pam_stack_test.sh`.
+  * **The user did use MFA, and the module still asked for a second factor** -
+    either the provider reported it as a value that is not in your lists (see
+    above), or the claim describes an older authentication in the same provider
+    session, which this feature cannot distinguish.
+
+Setting `"client_debug": true` logs the whole userinfo response, which contains
+the user's identity attributes as well as the claims, so turn it off again
+afterwards.
+
+
 ## Authorisation
 
 The major refactoring of the module in Sep 2021 preserved (and bugfixed) the existing authorisation functionality.  However, the user should be warned that it is subject to revision, but generally preserving backward functionality if possible.

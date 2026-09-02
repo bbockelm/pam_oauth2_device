@@ -20,14 +20,20 @@ class MockServerRequestHandler(BaseHTTPRequestHandler):
     DEVICE_CODE = 'e1e9b7be-e720-467e-bbe1-5c382356e4a9'
     ACCESS_TOKEN  = 'ZjBhNTQxYzEzMGQwNWU1OWUxMDhkMTM5'
     VERIFICATION_URL = 'http://localhost:{}/oidc/device'.format(PORT)
+    SUB = 'YzQ4YWIzMzJhZjc5OWFkMzgwNmEwM2M5'
+    # The REFEDS MFA profile, which is what CILogon reports an MFA login as.
+    ACR = 'https://refeds.org/profile/mfa'
 
     def do_GET(self):
         if re.search(self.USERINFO_PATTERN, self.path):
             if 'Bearer ' + self.ACCESS_TOKEN in self.headers.get('Authorization', ''):
                 response_data = {
-                    'sub': 'YzQ4YWIzMzJhZjc5OWFkMzgwNmEwM2M5',
+                    'sub': self.SUB,
                     'preferred_username': 'jdoe',
-                    'name': 'Joe Doe'
+                    'name': 'Joe Doe',
+                    # How the user authenticated: CILogon reports this from
+                    # userinfo as well as in the ID token.
+                    'acr': self.ACR
                 }
                 self.send_response(200)
                 self.end_headers()

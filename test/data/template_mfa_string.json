@@ -1,0 +1,19 @@
+{
+    "oauth": {
+        "client": {
+            "id": "client_id",
+            "secret": "client_secret"
+        },
+        "scope": "openid profile",
+        "device_endpoint": "https://cilogon.org/oauth2/device_authorization",
+        "token_endpoint": "https://cilogon.org/oauth2/token",
+        "userinfo_endpoint": "https://cilogon.org/oauth2/userinfo",
+        "username_attribute": "preferred_username",
+        "name_attribute": "gecos"
+    },
+    "mfa": {
+        "acr_values": "https://refeds.org/profile/mfa",
+        "amr_values": "mfa",
+        "if_absent": "second_factor"
+    }
+}

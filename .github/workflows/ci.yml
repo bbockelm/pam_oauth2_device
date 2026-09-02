@@ -54,6 +54,7 @@ jobs:
             make \
             openldap-devel \
             pam-devel \
+            pamtester \
             python3 \
             tar
 

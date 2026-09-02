@@ -8,6 +8,17 @@
 class Config
 {
 public:
+    /*! @brief What to do when the provider did not record that MFA was performed.
+     *
+     * IGNORE         - do not look at the acr/amr claims at all (the default,
+     *                  and what every existing configuration gets).
+     * SECOND_FACTOR  - authentication succeeded, but pam_sm_authenticate returns
+     *                  PAM_CRED_INSUFFICIENT so the PAM stack can run a second
+     *                  factor.  See the "mfa" section of README.md.
+     * DENY           - refuse the login outright.
+     */
+    enum class mfa_policy_t { IGNORE, SECOND_FACTOR, DENY };
+
     void load(const char *path);
     std::string client_id,
         client_secret,
@@ -41,6 +52,12 @@ public:
          http_basic_auth = true,
          client_debug = false;
     std::map<std::string, std::set<std::string>> usermap;
+
+    //! Values of the userinfo acr claim that count as MFA having been done.
+    std::set<std::string> mfa_acr_values;
+    //! Values of the userinfo amr claim that count as MFA having been done.
+    std::set<std::string> mfa_amr_values;
+    mfa_policy_t mfa_if_absent = mfa_policy_t::IGNORE;
 };
 
 #endif // PAM_OAUTH2_DEVICE_CONFIG_HPP
