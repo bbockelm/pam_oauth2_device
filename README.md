@@ -14,11 +14,36 @@ This code was originally developed by [Mazarykova Univerzita](https://github.com
 ## Build
 
 The upstream build uses basic `make` and we have stuck with this for compatibility reasons.
-The two basic targets are `make` and `make test`; the latter will build (some of) the tests and run them.
+The two basic targets are `make` and `make test`; the latter builds the tests and
+runs them, starting the OAuth2 mock server they need for the duration of the run.
 
-* Note that at present some of the integration tests are failing.
 * Note you can build RPMs and DEBs, though currently they are designed for CentOS7 and Ubuntu 18.04 respectively.
   * The build currently requires Docker (or compatible)
+
+
+### Development container
+
+The repository ships a dev container (see [`.devcontainer`](.devcontainer)) with
+the compiler, the PAM/curl/LDAP headers, GoogleTest and `pamtester` already
+installed.  Open the repository in VS Code and choose *Reopen in Container*, or
+use the `devcontainer` CLI:
+
+```
+devcontainer up --workspace-folder .
+devcontainer exec --workspace-folder . make test
+```
+
+It is based on AlmaLinux 9 to stay close to the platforms the module is packaged
+for; build with `--build-arg IMAGE_BASE=...` to target a different EL release.
+
+
+### Manual build dependencies (AlmaLinux/Rocky 8 and 9)
+
+```
+dnf install -y epel-release
+dnf config-manager --set-enabled powertools   # EL8 only; gtest-devel lives there
+dnf install -y gcc gcc-c++ make libcurl-devel openldap-devel pam-devel gtest-devel python3
+```
 
 
 ### Manual Build on Scientific Linux or CentOS7

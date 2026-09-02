@@ -38,4 +38,4 @@ install: pam_oauth2_device.so
 .PHONY: test tests
 
 test tests:
-	make -C test
+	$(MAKE) -C test check

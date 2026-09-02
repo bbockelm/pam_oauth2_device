@@ -1,0 +1,31 @@
+{
+  "name": "pam_oauth2_device",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      "IMAGE_BASE": "quay.io/almalinux/almalinux:9"
+    }
+  },
+  "workspaceFolder": "/workspaces/pam_oauth2_device",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/pam_oauth2_device,type=bind",
+  "remoteUser": "vscode",
+  "postCreateCommand": ".devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.makefile-tools",
+        "ms-python.python"
+      ],
+      "settings": {
+        "C_Cpp.default.cppStandard": "c++11",
+        "C_Cpp.default.includePath": [
+          "${workspaceFolder}/src",
+          "${workspaceFolder}/src/include"
+        ],
+        "files.trimTrailingWhitespace": true,
+        "files.insertFinalNewline": true
+      }
+    }
+  }
+}

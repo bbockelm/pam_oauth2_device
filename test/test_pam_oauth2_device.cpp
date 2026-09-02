@@ -18,16 +18,40 @@
 namespace
 {
 
-TEST(PamTest, Device)
+// These exercise the OAuth2 endpoints against test/mock_server.py, which
+// test/run_tests.sh starts for the duration of the run.
+
+//! A logger that discards everything: there is no pam handle under test.
+pam_oauth2_log test_logger()
+{
+    return pam_oauth2_log(nullptr, pam_oauth2_log::log_level_t::DEBUG);
+}
+
+/*! @brief A config holding the mock server's client credentials.
+ *
+ * pam_oauth2_curl takes the credentials it authenticates with from the Config,
+ * not from the client_id/client_secret arguments of the functions below, so
+ * the Config has to carry them just as it does in pam_sm_authenticate().
+ */
+Config test_config()
 {
     Config config;
-    pam_oauth2_log logger;
+    config.client_id = CLIENT_ID;
+    config.client_secret = CLIENT_SECRET;
+    config.scope = SCOPE;
+    return config;
+}
+
+TEST(PamTest, Device)
+{
+    Config config = test_config();
+    pam_oauth2_log logger = test_logger();
     DeviceAuthResponse response;
     make_authorization_request(config,
-			       logger,
-			       CLIENT_ID,
-                               CLIENT_SECRET,
-                               SCOPE,
+                               logger,
+                               config.client_id,
+                               config.client_secret,
+                               config.scope,
                                DEVICE_ENDPOINT,
                                &response);
     EXPECT_EQ(response.user_code, USER_CODE);
@@ -39,24 +63,32 @@ TEST(PamTest, Device)
 
 TEST(PamTest, Token)
 {
+    Config config = test_config();
+    pam_oauth2_log logger = test_logger();
     std::string token;
-    poll_for_token(CLIENT_ID, CLIENT_SECRET,
+    poll_for_token(config,
+                   logger,
+                   config.client_id,
+                   config.client_secret,
                    TOKEN_ENDPOINT,
-                   DEVICE_CODE, token);
+                   DEVICE_CODE,
+                   token);
     EXPECT_EQ(token, ACCESS_TOKEN);
 }
 
 TEST(PamTest, Userinfo)
 {
-    Userinfo userinfo;
-    get_userinfo(USERINFO_ENDPOINT,
-                 ACCESS_TOKEN,
-                 USERNAME_ATTRIBUTE,
-                 NAME_ATTRIBUTE,
-                 &userinfo);
-    EXPECT_EQ(userinfo.sub, "YzQ4YWIzMzJhZjc5OWFkMzgwNmEwM2M5");
-    EXPECT_EQ(userinfo.username, "jdoe");
-    EXPECT_EQ(userinfo.name, "Joe Doe");
+    Config config = test_config();
+    pam_oauth2_log logger = test_logger();
+    Userinfo userinfo = get_userinfo(config,
+                                     logger,
+                                     USERINFO_ENDPOINT,
+                                     ACCESS_TOKEN,
+                                     USERNAME_ATTRIBUTE,
+                                     NAME_ATTRIBUTE);
+    EXPECT_EQ(userinfo.sub(), "YzQ4YWIzMzJhZjc5OWFkMzgwNmEwM2M5");
+    EXPECT_EQ(userinfo.username(), "jdoe");
+    EXPECT_EQ(userinfo.name(), "Joe Doe");
 }
 
 } // namespace

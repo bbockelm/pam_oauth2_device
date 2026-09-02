@@ -25,11 +25,15 @@ objects = $(SRC_DIR)/pam_oauth2_device.o \
 		  $(SRC_DIR)/include/pam_oauth2_curl.o \
 		  $(SRC_DIR)/include/pam_oauth2_log.o
 
+.PHONY: all check clean distclean
+
 all: $(TESTS)
-	for test in $(TESTS); do ./$${test}; done
 
+# run_tests.sh starts mock_server.py, waits for it to listen, runs each test
+# binary and shuts the server down again.
+check: $(TESTS)
+	./run_tests.sh $(TESTS)
 
-.PHONY: clean distclean
 
 clean:
 	rm -f gtest.a gtest_main.a *.o $(objects) unit.o temp_file.o test_pam_oauth2_device.o
@@ -40,8 +44,11 @@ distclean: clean
 # System libraries for gtest (includes the default main function)
 GTEST_LIBS = -lgtest_main -lgtest -lpthread
 
+CC ?= cc
+CFLAGS += -g -Wall -Wextra
+
 %.o: %.c %.h
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 test_config.o: test_config.cpp $(GTEST_HEADERS) $(SRC_DIR)/include/config.hpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -I$(SRC_DIR) -c test_config.cpp
