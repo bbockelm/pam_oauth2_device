@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <iterator>
 #include <cstdlib>
+#include <fcntl.h>
+#include <unistd.h>
 
 
 /** \brief Check whether the contents of a file matches exactly that of the string being passed to it
@@ -264,4 +266,56 @@ is_authorized_local(Userinfo &ui, std::string const &username_local)
     Config cf{make_dummy_config(ConfigSection::TEST_USERMAP, ui)};
     pam_oauth2_log log(nullptr, pam_oauth2_log::log_level_t::DEBUG);
     return is_authorized(cf, log, username_local, ui, nullptr);
+}
+
+TEST(PamOAuth2Unit, LoggerDoesNotCloseStderr)
+{
+    // The destructor used to fclose(stderr), taking fd 2 away from the whole
+    // process; every later write by any code then failed.
+    {
+        pam_oauth2_log logger(nullptr, pam_oauth2_log::log_level_t::ERR);
+        logger.log(pam_oauth2_log::log_level_t::ERR, " ");
+    }
+    EXPECT_GE(fprintf(stderr, " "), 0);
+    EXPECT_NE(fcntl(STDERR_FILENO, F_GETFD), -1);
+}
+
+TEST(PamOAuth2Unit, LoggerRespectsLogLevel)
+{
+    // The level used to be ignored for formatted messages, so a DEBUG message
+    // was emitted even at INFO -- including one that logs a whole userinfo
+    // response.
+    pam_oauth2_log logger(nullptr, pam_oauth2_log::log_level_t::INFO);
+
+    testing::internal::CaptureStderr();
+    logger.log(pam_oauth2_log::log_level_t::DEBUG, "a debug message");
+    logger.log(pam_oauth2_log::log_level_t::INFO, "an info message");
+    logger.log(pam_oauth2_log::log_level_t::ERR, "an error message");
+    std::string const at_info = testing::internal::GetCapturedStderr();
+
+    EXPECT_EQ(at_info.find("a debug message"), std::string::npos) << at_info;
+    EXPECT_NE(at_info.find("an info message"), std::string::npos) << at_info;
+    EXPECT_NE(at_info.find("an error message"), std::string::npos) << at_info;
+
+    logger.set_log_level(pam_oauth2_log::log_level_t::DEBUG);
+    testing::internal::CaptureStderr();
+    logger.log(pam_oauth2_log::log_level_t::DEBUG, "a debug message");
+    EXPECT_NE(testing::internal::GetCapturedStderr().find("a debug message"),
+              std::string::npos);
+
+    logger.set_log_level(pam_oauth2_log::log_level_t::OFF);
+    testing::internal::CaptureStderr();
+    logger.log(pam_oauth2_log::log_level_t::ERR, "silenced");
+    EXPECT_EQ(testing::internal::GetCapturedStderr().find("silenced"),
+              std::string::npos);
+}
+
+TEST(PamOAuth2Unit, LoggerTerminatesMessages)
+{
+    // Without a terminator consecutive messages run together on stderr.
+    pam_oauth2_log logger(nullptr, pam_oauth2_log::log_level_t::INFO);
+    testing::internal::CaptureStderr();
+    logger.log(pam_oauth2_log::log_level_t::INFO, "first");
+    logger.log(pam_oauth2_log::log_level_t::INFO, "second\n");
+    EXPECT_EQ(testing::internal::GetCapturedStderr(), "first\nsecond\n");
 }

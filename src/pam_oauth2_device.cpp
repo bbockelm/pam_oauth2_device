@@ -172,8 +172,8 @@ void make_authorization_request(const Config &config,
 
     try
     {
-        puts(result.c_str());
-        logger.log(pam_oauth2_log::log_level_t::DEBUG, "Response to authorization request: %s\n", result.c_str());
+        logger.log(pam_oauth2_log::log_level_t::DEBUG,
+                   "Response to authorization request: %s", result.c_str());
         auto data = json::parse(result);
         response->user_code = data.at("user_code");
         response->device_code = data.at("device_code");
@@ -377,8 +377,11 @@ bool is_authorized(Config const &config,
         try
         {
 	    // Extra if in case c_str is expensive -
+	    // result is the server's response body: it must be an argument, never
+	    // the format string, or a server that returns a "%s" or "%n" gets to
+	    // drive printf inside a PAM module.
 	    if(logger.log_level() == pam_oauth2_log::log_level_t::DEBUG)
-		logger.log(pam_oauth2_log::log_level_t::DEBUG, result.c_str());
+		logger.log(pam_oauth2_log::log_level_t::DEBUG, "%s", result.c_str());
             auto data = json::parse(result);
             std::vector<std::string> groups = data.at("groups").get<std::vector<std::string>>();
             std::sort(groups.begin(), groups.end());
@@ -528,13 +531,13 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
     catch(std::exception const &e)
     {
         logger.log(pam_oauth2_log::log_level_t::ERR, "Caught system exception (this is bad)");
-        logger.log(pam_oauth2_log::log_level_t::ERR, e.what());
+        logger.log(pam_oauth2_log::log_level_t::ERR, "%s", e.what());
         return PAM_SYSTEM_ERR;
     }
     catch(char const *msg)
     {
         logger.log(pam_oauth2_log::log_level_t::ERR, "Caught cannot-happen exception(this is very bad)");
-        logger.log(pam_oauth2_log::log_level_t::ERR, msg);
+        logger.log(pam_oauth2_log::log_level_t::ERR, "%s", msg);
         return PAM_SYSTEM_ERR;
     }
     return PAM_AUTH_ERR;
@@ -552,8 +555,7 @@ parse_args(Config &config, [[maybe_unused]] int flags, int argc, const char **ar
     }
     catch (json::exception &e)
     {
-	logger.log(pam_oauth2_log::log_level_t::ERR, "Failed to load config:");
-	logger.log(pam_oauth2_log::log_level_t::ERR, e.what());
+	logger.log(pam_oauth2_log::log_level_t::ERR, "Failed to load config: %s", e.what());
 	return false;
     }
 
