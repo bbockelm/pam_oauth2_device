@@ -12,6 +12,8 @@
 #include "metadata.hpp"
 #include "pam_oauth2_device.hpp"
 #include "temp_file.hpp"
+#include "pam_oauth2_excpt.hpp"
+#include <security/pam_modules.h>
 #include <fstream>
 #include <algorithm>
 #include <iterator>
@@ -318,4 +320,138 @@ TEST(PamOAuth2Unit, LoggerTerminatesMessages)
     logger.log(pam_oauth2_log::log_level_t::INFO, "first");
     logger.log(pam_oauth2_log::log_level_t::INFO, "second\n");
     EXPECT_EQ(testing::internal::GetCapturedStderr(), "first\nsecond\n");
+}
+
+
+/***** MFA *****/
+
+namespace
+{
+
+char const *const REFEDS_MFA = "https://refeds.org/profile/mfa";
+
+Config mfa_config(Config::mfa_policy_t policy)
+{
+    Config config;
+    config.client_id = "client_id";
+    config.mfa_acr_values.insert(REFEDS_MFA);
+    config.mfa_if_absent = policy;
+    return config;
+}
+
+//! A userinfo reporting the given authentication context.
+Userinfo authenticated_with(std::string const &acr,
+                            std::vector<std::string> const &amr = {})
+{
+    Userinfo ui("sub", "jdoe", "Joe Doe");
+    ui.set_authn_context(acr, amr);
+    return ui;
+}
+
+pam_oauth2_log quiet_logger()
+{
+    return pam_oauth2_log(nullptr, pam_oauth2_log::log_level_t::ERR);
+}
+
+} // namespace
+
+
+TEST(PamOAuth2Unit, MfaSatisfied)
+{
+    Config config = mfa_config(Config::mfa_policy_t::SECOND_FACTOR);
+
+    EXPECT_TRUE(mfa_satisfied(config, authenticated_with(REFEDS_MFA)));
+
+    // An acr naming some other authentication context.  Providers do report a
+    // plain context for logins that did use MFA, so presence of the claim
+    // cannot stand in for a match on its value.
+    EXPECT_FALSE(mfa_satisfied(config, authenticated_with(
+        "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport")));
+
+    // Neither claim reported, which the check must not mistake for a match.
+    EXPECT_FALSE(mfa_satisfied(config, authenticated_with("")));
+
+    // Reported through amr instead: some providers send no acr at all.
+    config.mfa_amr_values.insert("mfa");
+    EXPECT_FALSE(mfa_satisfied(config, authenticated_with("", {"pwd"})));
+    EXPECT_TRUE(mfa_satisfied(config, authenticated_with("", {"mfa"})));
+    EXPECT_TRUE(mfa_satisfied(config, authenticated_with("", {"pwd", "mfa"})));
+}
+
+TEST(PamOAuth2Unit, MfaPolicy)
+{
+    pam_oauth2_log logger = quiet_logger();
+    Userinfo const with_mfa = authenticated_with(REFEDS_MFA);
+    Userinfo const without_mfa = authenticated_with("");
+
+    // Not configured: every existing deployment keeps working unchanged.
+    Config ignore;
+    ignore.client_id = "client_id";
+    EXPECT_EQ(check_mfa_policy(ignore, logger, without_mfa), PAM_SUCCESS);
+
+    Config const second = mfa_config(Config::mfa_policy_t::SECOND_FACTOR);
+    EXPECT_EQ(check_mfa_policy(second, logger, with_mfa), PAM_SUCCESS);
+    EXPECT_EQ(check_mfa_policy(second, logger, without_mfa), PAM_CRED_INSUFFICIENT);
+
+    Config const deny = mfa_config(Config::mfa_policy_t::DENY);
+    EXPECT_EQ(check_mfa_policy(deny, logger, with_mfa), PAM_SUCCESS);
+    EXPECT_EQ(check_mfa_policy(deny, logger, without_mfa), PAM_AUTH_ERR);
+}
+
+/*! Whatever else changes, these messages have to stay diagnosable: they are
+ * all a sysadmin gets from /var/log/secure when a login is unexpectedly sent to
+ * a second factor.
+ */
+TEST(PamOAuth2Unit, MfaLoggingIsDiagnosable)
+{
+    // A null pam handle makes the logger write to stderr, which we can capture.
+    pam_oauth2_log logger(nullptr, pam_oauth2_log::log_level_t::INFO);
+    Config config = mfa_config(Config::mfa_policy_t::SECOND_FACTOR);
+    config.mfa_amr_values.insert("otp");
+
+    // An ORCID-shaped userinfo: no acr at all, amr says password only.
+    testing::internal::CaptureStderr();
+    EXPECT_EQ(check_mfa_policy(config, logger, authenticated_with("", {"pwd"})),
+              PAM_CRED_INSUFFICIENT);
+    std::string const output = testing::internal::GetCapturedStderr();
+
+    // What the provider actually said -- both claims, since a provider may
+    // report through either and logging only one hides the other.
+    EXPECT_NE(output.find("acr <absent>"), std::string::npos) << output;
+    EXPECT_NE(output.find("pwd"), std::string::npos) << output;
+    // What we were looking for, so the mismatch is visible without the config.
+    EXPECT_NE(output.find(REFEDS_MFA), std::string::npos) << output;
+    EXPECT_NE(output.find("otp"), std::string::npos) << output;
+    // And that the module asked for a second factor at all: a stack missing
+    // cred_insufficient otherwise turns this into a bare login failure with
+    // nothing to explain it.
+    EXPECT_NE(output.find("PAM_CRED_INSUFFICIENT"), std::string::npos) << output;
+}
+
+/*! get_userinfo() has to cope with the shapes providers actually send.  These
+ * drive the parsing through Userinfo rather than the network, so the JSON
+ * handling is covered without a server.
+ */
+TEST(PamOAuth2Unit, AuthnContextShapes)
+{
+    // A bare string amr, which is what CILogon sends for some providers even
+    // though OpenID Connect Core specifies an array.
+    Userinfo bare("sub", "jdoe", "Joe Doe");
+    bare.set_authn_context("", {"pwd"});
+    ASSERT_EQ(bare.amr().size(), 1u);
+    EXPECT_EQ(bare.amr()[0], "pwd");
+
+    // Several methods.
+    Userinfo many("sub", "jdoe", "Joe Doe");
+    many.set_authn_context("", {"pwd", "otp", "mfa"});
+    EXPECT_EQ(many.amr().size(), 3u);
+
+    // Neither claim: the common case, and the one a policy must not mistake
+    // for a match.
+    Userinfo silent("sub", "jdoe", "Joe Doe");
+    EXPECT_TRUE(silent.acr().empty());
+    EXPECT_TRUE(silent.amr().empty());
+
+    Config const config = mfa_config(Config::mfa_policy_t::SECOND_FACTOR);
+    EXPECT_FALSE(mfa_satisfied(config, silent));
 }

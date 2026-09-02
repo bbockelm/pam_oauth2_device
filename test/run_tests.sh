@@ -59,4 +59,11 @@ for test in "$@"; do
     fi
 done
 
+# Checks the PAM stacks documented in README.md; skips itself where it cannot
+# run (no root, no pamtester).
+echo "== ./pam_stack_test.sh =="
+if ! ./pam_stack_test.sh; then
+    status=1
+fi
+
 exit $status

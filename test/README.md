@@ -29,3 +29,9 @@ start `./mock_server.py` in another terminal first or invoke it through
     and against `../config_template.json`.
   * `unit` - QR code rendering and the authorization decision logic.
   * `test_pam_oauth2_device` - the OAuth2 device flow against `mock_server.py`.
+  * `pam_stack_test.sh` - drives the PAM stacks documented in the top-level
+    README with `pamtester` and a stub module, checking that a second factor is
+    demanded and honoured and that a `*bypass*` account is not waved through.
+    Needs root and `pamtester`; skips itself otherwise, which it does inside the
+    dev container, since that runs as an unprivileged user.  Run it there with
+    `sudo ./pam_stack_test.sh`.  CI runs it for real on both EL8 and EL9.

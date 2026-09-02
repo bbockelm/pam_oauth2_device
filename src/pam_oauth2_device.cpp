@@ -17,6 +17,7 @@
 
 #include "include/config.hpp"
 #include "include/metadata.hpp"
+#include <algorithm>
 #include "include/ldapquery.h"
 #include "include/nayuki/QrCode.hpp"
 #include "include/nlohmann/json.hpp"
@@ -50,6 +51,14 @@ void Userinfo::add_group(const std::string &group)
     groups_.push_back(group);
     std::sort(groups_.begin(), groups_.end());
 }
+
+void Userinfo::set_authn_context(std::string const &acr,
+				std::vector<std::string> const &amr)
+{
+    acr_ = acr;
+    amr_ = amr;
+}
+
 
 void Userinfo::set_groups(const std::vector<std::string> &groups)
 {
@@ -281,6 +290,27 @@ get_userinfo(const Config &config,
         Userinfo ui(data.at("sub"), data.at(username_attribute), data.at(name_attribute));
 	if(data.find("groups") != the_end)
 	    ui.set_groups( data.at("groups").get<std::vector<std::string>>() );
+
+	// How the user authenticated, for the MFA policy.  Both are optional:
+	// most providers report neither.
+	std::string acr;
+	if(data.find("acr") != the_end && data.at("acr").is_string())
+	    acr = data.at("acr").get<std::string>();
+	std::vector<std::string> amr;
+	if(data.find("amr") != the_end)
+	{
+	    // OpenID Connect Core specifies an array, but CILogon sends a bare
+	    // string for ORCID logins ("amr": "pwd").  Accept either.
+	    auto const &value = data.at("amr");
+	    if(value.is_string())
+		amr.push_back(value.get<std::string>());
+	    else if(value.is_array())
+		for(auto const &method : value)
+		    if(method.is_string())
+			amr.push_back(method.get<std::string>());
+	}
+	ui.set_authn_context(acr, amr);
+
         return ui;
     }
     catch (json::exception &e)
@@ -450,6 +480,85 @@ bool is_authorized(Config const &config,
 }
 
 
+//! Render a list of claim values for a log message.
+static std::string join(std::vector<std::string> const &values)
+{
+    std::string out;
+    for (auto const &v : values)
+    {
+        if (!out.empty())
+            out += ", ";
+        out += v;
+    }
+    return out;
+}
+
+//! Ditto, for the configured sets.
+static std::string join(std::set<std::string> const &values)
+{
+    return join(std::vector<std::string>(values.cbegin(), values.cend()));
+}
+
+
+/*! @brief Whether the userinfo records that MFA was performed. */
+bool mfa_satisfied(Config const &config, Userinfo const &userinfo)
+{
+    if (!userinfo.acr().empty()
+        && config.mfa_acr_values.find(userinfo.acr()) != config.mfa_acr_values.cend())
+        return true;
+
+    for (auto const &method : userinfo.amr())
+        if (config.mfa_amr_values.find(method) != config.mfa_amr_values.cend())
+            return true;
+
+    return false;
+}
+
+
+int check_mfa_policy(Config const &config,
+                     pam_oauth2_log &logger,
+                     Userinfo const &userinfo)
+{
+    if (config.mfa_if_absent == Config::mfa_policy_t::IGNORE)
+        return PAM_SUCCESS;
+
+    // Both claims, always: which one a provider uses varies, so logging only
+    // the configured one hides why a login was refused.
+    std::string const acr = userinfo.acr().empty() ? "<absent>" : userinfo.acr();
+    std::string const amr =
+        userinfo.amr().empty() ? "<absent>" : join(userinfo.amr());
+
+    if (mfa_satisfied(config, userinfo))
+    {
+        logger.log(pam_oauth2_log::log_level_t::INFO,
+                   "MFA recorded by the provider: acr %s, amr %s",
+                   acr.c_str(), amr.c_str());
+        return PAM_SUCCESS;
+    }
+
+    // With the configured values, so a provider reporting something nobody
+    // listed is diagnosable without reading the config.
+    logger.log(pam_oauth2_log::log_level_t::INFO,
+               "provider did not record MFA: acr %s, amr %s;"
+               " configured acr_values [%s], amr_values [%s]",
+               acr.c_str(), amr.c_str(),
+               join(config.mfa_acr_values).c_str(),
+               join(config.mfa_amr_values).c_str());
+
+    if (config.mfa_if_absent == Config::mfa_policy_t::DENY)
+    {
+        logger.log(pam_oauth2_log::log_level_t::WARN, "denying login: MFA required");
+        return PAM_AUTH_ERR;
+    }
+
+    // A stack that does not handle cred_insufficient turns this into a bare
+    // login failure, which is otherwise indistinguishable from a refusal.
+    logger.log(pam_oauth2_log::log_level_t::INFO,
+               "requiring a second factor: returning PAM_CRED_INSUFFICIENT");
+    return PAM_CRED_INSUFFICIENT;
+}
+
+
 /* expected hook */
 PAM_EXTERN int pam_sm_setcred(pam_handle_t *pamh, int flags, int argc, const char **argv)
 {
@@ -520,7 +629,9 @@ PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, cons
 				 config.username_attribute, config.name_attribute)};
 	if (is_authorized(config, logger, username_local, ui)) {
 	    logger.log(pam_oauth2_log::log_level_t::INFO, "%s is authorised", username_local);
-	    return PAM_SUCCESS;
+	    // Authorisation first: someone who would be refused anyway should
+	    // not be sent round a second factor before being told no.
+	    return check_mfa_policy(config, logger, ui);
 	}
     }
     catch(BaseError const &e)
@@ -553,8 +664,12 @@ parse_args(Config &config, [[maybe_unused]] int flags, int argc, const char **ar
         // TODO reallow override in argv
         config.load(config_path);
     }
-    catch (json::exception &e)
+    catch (std::exception const &e)
     {
+	// Not just json::exception: Config::load() reports a missing file and a
+	// rejected mfa section as std::runtime_error, and parse_args is called
+	// outside the try in the pam_sm_* entry points -- so anything escaping
+	// here leaves a PAM module through C frames and calls std::terminate().
 	logger.log(pam_oauth2_log::log_level_t::ERR, "Failed to load config: %s", e.what());
 	return false;
     }

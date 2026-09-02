@@ -1,4 +1,5 @@
 #include "gtest/gtest.h"
+#include <security/pam_modules.h>
 #include "pam_oauth2_device.hpp"
 
 
@@ -14,6 +15,7 @@
 #define DEVICE_CODE "e1e9b7be-e720-467e-bbe1-5c382356e4a9"
 #define ACCESS_TOKEN "ZjBhNTQxYzEzMGQwNWU1OWUxMDhkMTM5"
 #define VERIFICATION_URL "http://localhost:8042/oidc/device"
+#define REFEDS_MFA "https://refeds.org/profile/mfa"
 
 namespace
 {
@@ -89,6 +91,14 @@ TEST(PamTest, Userinfo)
     EXPECT_EQ(userinfo.sub(), "YzQ4YWIzMzJhZjc5OWFkMzgwNmEwM2M5");
     EXPECT_EQ(userinfo.username(), "jdoe");
     EXPECT_EQ(userinfo.name(), "Joe Doe");
+    // The acr claim has to survive the userinfo round trip: it is what the MFA
+    // policy is decided on.
+    EXPECT_EQ(userinfo.acr(), REFEDS_MFA);
+
+    config.mfa_acr_values.insert(REFEDS_MFA);
+    config.mfa_if_absent = Config::mfa_policy_t::SECOND_FACTOR;
+    EXPECT_TRUE(mfa_satisfied(config, userinfo));
+    EXPECT_EQ(check_mfa_policy(config, logger, userinfo), PAM_SUCCESS);
 }
 
 } // namespace
