@@ -4,6 +4,7 @@
 #include <string>
 #include <cstdio>
 #include "include/pam_oauth2_log.hpp"
+#include "include/config.hpp"
 
 
 /*! @brief userinfo type object (cf RFC 7662)

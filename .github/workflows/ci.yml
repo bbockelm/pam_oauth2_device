@@ -1,0 +1,78 @@
+---
+name: CI
+
+on:
+  # Topic branches are covered by pull_request; running on every push as well
+  # just builds each commit of an open PR twice.
+  push:
+    branches:
+      - osg-base
+      - chtc_changes_v2
+      - master
+  pull_request:
+  workflow_dispatch:
+
+# A new push to a branch makes the run already in flight for it pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test (${{ matrix.os_base }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os_base:
+          - "quay.io/almalinux/almalinux:8"
+          - "quay.io/almalinux/almalinux:9"
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.os_base }}
+    steps:
+      # Installed before the checkout so actions/checkout has git and tar.
+      - name: Install build dependencies
+        run: |
+          . /etc/os-release
+          if [ "${VERSION_ID%%.*}" = "8" ]; then
+            # The almalinux:8 image ships a GPG key older than the metadata its
+            # repositories are now signed with.  EL9 neither needs this nor
+            # accepts it: the key is SHA1-signed, which its crypto policy
+            # refuses, so importing it there fails the whole step.
+            rpm --import https://repo.almalinux.org/almalinux/RPM-GPG-KEY-AlmaLinux
+            # gtest-devel is in PowerTools on EL8; on EL9 EPEL carries it.
+            dnf install -y dnf-plugins-core
+            dnf config-manager --set-enabled powertools
+          fi
+          dnf install -y epel-release
+          dnf install -y \
+            gcc \
+            gcc-c++ \
+            git \
+            gtest-devel \
+            libcurl-devel \
+            make \
+            openldap-devel \
+            pam-devel \
+            python3 \
+            tar
+
+      - uses: actions/checkout@v4
+
+      - name: Build module
+        run: make
+
+      - name: Run unit tests
+        run: make test
+
+  devcontainer:
+    name: Dev container builds and passes tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the dev container and run the test suite in it
+        uses: devcontainers/ci@v0.3
+        with:
+          push: never
+          runCmd: make && make test

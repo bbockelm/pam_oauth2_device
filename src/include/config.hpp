@@ -32,12 +32,14 @@ public:
         cloud_username,
         local_username_suffix,
         metadata_file;
-    int qr_error_correction_level;
-    bool group_access,
-         cloud_access,
-         group_and_username_access,
-         http_basic_auth,
-         client_debug;
+    // Defaults mirror the ones applied by Config::load(); they matter for
+    // Config objects that are never load()ed, e.g. in the unit tests.
+    int qr_error_correction_level = -1;
+    bool group_access = false,
+         cloud_access = false,
+         group_and_username_access = false,
+         http_basic_auth = true,
+         client_debug = false;
     std::map<std::string, std::set<std::string>> usermap;
 };
 

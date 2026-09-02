@@ -12,7 +12,15 @@ namespace
 TEST(ConfigTest, MissingFile)
 {
     Config config;
-    ASSERT_THROW(config.load("data/missing.json"), json::parse_error);
+    try
+    {
+        config.load("data/missing.json");
+        FAIL() << "Expected std::runtime_error";
+    }
+    catch (std::runtime_error const &e)
+    {
+        EXPECT_STREQ("File not found: data/missing.json", e.what());
+    }
 }
 
 TEST(ConfigTest, WrongFormat)
@@ -41,8 +49,10 @@ TEST(ConfigTest, Full)
     config.load("../config_template.json");
     EXPECT_EQ(config.client_id, CLIENT_ID);
     EXPECT_EQ(config.ldap_host, "ldaps://ldap-server:636");
-    EXPECT_EQ(config.usermap["provider_user_id_1"].count("root"), 1);
-    EXPECT_EQ(config.usermap.size(), 2);
+    EXPECT_EQ(config.usermap["*bypass*"].count("root"), 1);
+    EXPECT_EQ(config.usermap["provider_user_id_1"].count("bob"), 1);
+    EXPECT_EQ(config.usermap["provider_user_id_2"].count("mike"), 1);
+    EXPECT_EQ(config.usermap.size(), 3);
     EXPECT_EQ(config.qr_error_correction_level, 0);
 }
 

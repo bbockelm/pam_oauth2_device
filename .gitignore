@@ -227,3 +227,12 @@ fabric.properties
 
 # Google C++ test library
 googletest*
+
+# Build outputs
+pam_oauth2_device.so
+
+# Test binaries
+/test/test_config
+/test/test_pam_oauth2_device
+/test/test_pam_oauth2_curl
+/test/unit

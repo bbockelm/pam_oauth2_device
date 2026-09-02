@@ -38,12 +38,30 @@ class MockServerRequestHandler(BaseHTTPRequestHandler):
         else:
             self.send_response(404)
             self.end_headers()
+    def client_authenticated(self, post_data):
+        """Check the client credentials.
+
+        RFC 6749 section 2.3.1 lets a client authenticate either with HTTP
+        Basic auth or by passing the credentials in the request body, and the
+        module picks between the two based on the http_basic_auth setting.
+        Accept both, but require correct credentials either way.
+        """
+        auth = self.headers.get('Authorization', '')
+        if auth.startswith('Basic '):
+            try:
+                decoded = base64.b64decode(auth.split()[1]).decode()
+            except (IndexError, ValueError):
+                return False
+            return decoded == '{}:{}'.format(self.CLIENT_ID, self.CLIENT_SECRET)
+        return (post_data.get('client_id') == [self.CLIENT_ID] and
+                post_data.get('client_secret') == [self.CLIENT_SECRET])
+
     def do_POST(self):
         body = self.rfile.read(int(self.headers['Content-Length'])).decode()
         post_data = parse_qs(body)
         if re.search(self.DEVICECODE_PATTERN, self.path):
-            if (post_data['client_id'] == [self.CLIENT_ID] and
-                    post_data['scope'] == [self.SCOPE]):
+            if (self.client_authenticated(post_data) and
+                    post_data.get('scope') == [self.SCOPE]):
                 response_data = {
                     'user_code': self.USER_CODE,
                     'verification_uri': self.VERIFICATION_URL,
@@ -60,13 +78,9 @@ class MockServerRequestHandler(BaseHTTPRequestHandler):
                 self.send_response(403)
                 self.end_headers()
         elif re.search(self.TOKEN_PATTERN, self.path):
-            auth = self.headers.get('Authorization', '')
-            if (post_data['client_id'] == [self.CLIENT_ID] and
-                    post_data['device_code'] == [self.DEVICE_CODE] and
-                    post_data['grant_type'] == ['urn:ietf:params:oauth:grant-type:device_code'] and
-                    'Basic' in auth and
-                    base64.b64decode(auth.split()[1]).decode() == '{}:{}'.format(
-                        self.CLIENT_ID, self.CLIENT_SECRET)):
+            if (self.client_authenticated(post_data) and
+                    post_data.get('device_code') == [self.DEVICE_CODE] and
+                    post_data.get('grant_type') == ['urn:ietf:params:oauth:grant-type:device_code']):
                 response_data = {
                     'access_token': self.ACCESS_TOKEN,
                     'error': None,
